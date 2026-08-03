@@ -106,12 +106,26 @@ def test_the_last_possible_cut_point(baseline):
 
 @pytest.mark.parametrize("cut", [120, 250, 400])
 def test_truncating_the_series_reproduces_the_prefix_exactly(baseline, cut):
-    """Catches dependence on the length or extent of the data, not just its values."""
+    """Catches dependence on the length or extent of the data, not just its values.
+
+    The truncated run's *final* record is excluded from the comparison. That day
+    is the one place the two runs legitimately differ: the truncated run knows it
+    has no tomorrow, so an order decided at that close is annotated
+    `unfilled_end_of_data`, while the full run goes on to fill it. That marker
+    describes the extent of the data, not a decision — every decision on the day
+    (orders, fills, equity, positions) is still required to match byte for byte.
+    """
     bars, base = baseline
     truncated = {s: f.iloc[: cut + 1] for s, f in bars.items()}
     after = run_strategy(truncated, SETTINGS, force_close_at_end=False)
 
-    assert serialise(after.decisions) == serialise(base.decisions)[: cut + 1]
+    assert len(after.decisions) == cut + 1
+    assert serialise(after.decisions)[:-1] == serialise(base.decisions)[:cut]
+
+    # The shared final day must still agree on everything except that marker.
+    final_truncated = dict(after.decisions[-1])
+    final_truncated.pop("unfilled_end_of_data", None)
+    assert final_truncated == base.decisions[cut]
 
 
 def test_running_twice_is_bit_for_bit_identical(baseline):

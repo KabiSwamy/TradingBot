@@ -143,17 +143,31 @@ class SyntheticSource:
         sigma = self.annual_vol * np.sqrt(dt)
         shocks = rng.normal(mu, sigma, n)
 
-        # Inject dip-and-recover episodes: a few days sharply down, then a
-        # partial snap back. This is what gives RSI(2) something to find.
-        in_dip = 0
-        for i in range(n):
-            if in_dip > 0:
-                shocks[i] -= 0.020
-                in_dip -= 1
-            elif rng.random() < self.dip_probability:
-                in_dip = int(rng.integers(2, 5))
-            elif rng.random() < self.dip_probability:
-                shocks[i] += 0.015          # occasional snap-back rally
+        # Inject dip-and-recover episodes: a few days sharply down, then the
+        # same amount handed back over the following days. This is what gives
+        # RSI(2) something to find inside an uptrend.
+        #
+        # Each episode is constructed to sum to zero, so the injections change
+        # the *path* without changing the drift. An earlier version subtracted
+        # on the way down without adding back, which quietly overwhelmed the 7%
+        # drift with roughly -17%/yr of dip and turned the whole series into a
+        # permanent bear market — the kill switch fired within three years and
+        # the rest of the run was flat cash, which exercises almost nothing.
+        i = 0
+        while i < n:
+            if rng.random() < self.dip_probability:
+                fall = int(rng.integers(2, 5))
+                recover = int(rng.integers(2, 6))
+                depth = float(rng.uniform(0.015, 0.030))
+                end_fall = min(i + fall, n)
+                shocks[i:end_fall] -= depth
+                dropped = depth * (end_fall - i)
+                end_recover = min(end_fall + recover, n)
+                if end_recover > end_fall:
+                    shocks[end_fall:end_recover] += dropped / (end_recover - end_fall)
+                i = end_recover
+            else:
+                i += 1
 
         close = 100.0 * np.exp(np.cumsum(shocks))
 

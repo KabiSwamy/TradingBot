@@ -178,7 +178,7 @@ def load_bars(
     bars: dict[str, pd.DataFrame] = {}
     for symbol in symbols:
         frame = read_cached(symbol, cache_dir) if use_cache else None
-        if frame is None:
+        if frame is None or not _covers(frame, end):
             refresh_symbol(
                 symbol,
                 source,
@@ -191,6 +191,31 @@ def load_bars(
         validate_bars(frame, symbol, max_gap_business_days=max_gap_business_days)
         bars[symbol] = _slice_window(frame, start, end)
     return bars
+
+
+# Weekends, holidays and a not-yet-closed session mean the newest cached bar is
+# legitimately a few days behind any given end date.
+_STALENESS_TOLERANCE_DAYS = 5
+
+
+def _covers(bars: pd.DataFrame, end: str | None) -> bool:
+    """Does the cache reach `end`, allowing for non-trading days?
+
+    Without this check a cache built for one window is reused for a later one
+    and silently yields too few bars — or none at all. The run does not fail, it
+    just quietly reports on a shorter history than was asked for, which is the
+    kind of wrong answer that looks exactly like a right one.
+
+    Only the end is checked. Bars are always fetched from the earliest available
+    history (see `load_bars`), so a cached first date later than the requested
+    start means the symbol simply did not exist yet.
+    """
+    if bars.empty:
+        return False
+    if end is None:
+        return True
+    wanted = pd.Timestamp(end) - pd.tseries.offsets.BDay(_STALENESS_TOLERANCE_DAYS)
+    return bars.index[-1] >= wanted
 
 
 def _slice_window(bars: pd.DataFrame, start: str, end: str | None) -> pd.DataFrame:

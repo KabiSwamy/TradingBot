@@ -236,6 +236,39 @@ def test_load_bars_slices_to_the_window_but_caches_full_history(tmp_path):
     assert len(read_cached("TEST", tmp_path)) == 60    # cache keeps everything
 
 
+def test_a_cache_that_does_not_reach_the_window_end_is_refreshed(tmp_path):
+    """Regression: a stale cache silently truncated the backtest.
+
+    Loading 2020-01-01..2020-01-10 then asking for a later window used to reuse
+    the cache and return too few bars — or none — without any error. A run that
+    quietly covers less history than requested looks exactly like a correct one.
+    """
+    source = FakeSource(make_bars([100.0] * 10, start="2020-01-01"))
+    load_bars(["TEST"], source, tmp_path, start="2020-01-01", end="2020-01-10")
+    calls_after_first = len(source.calls)
+
+    source.frame = make_bars([100.0] * 200, start="2020-01-01")
+    bars = load_bars(["TEST"], source, tmp_path, start="2020-06-01", end="2020-09-01")
+
+    assert len(source.calls) > calls_after_first, "stale cache was reused"
+    assert not bars["TEST"].empty
+
+
+def test_a_cache_a_few_days_behind_is_still_considered_fresh(tmp_path):
+    """Weekends and holidays mean the newest bar legitimately lags the end date."""
+    source = FakeSource(make_bars([100.0] * 40, start="2020-01-01"))
+    load_bars(["TEST"], source, tmp_path, start="2020-01-01", end="2020-02-25")
+    calls_after_first = len(source.calls)
+
+    last_cached = read_cached("TEST", tmp_path).index[-1]
+    load_bars(
+        ["TEST"], source, tmp_path,
+        start="2020-01-01",
+        end=str((last_cached + pd.Timedelta(days=2)).date()),
+    )
+    assert len(source.calls) == calls_after_first, "refetched over a weekend-sized gap"
+
+
 def test_build_calendar_is_the_union_of_all_symbols(tmp_path):
     """A symbol with a shorter history must not drop days from the run."""
     long_bars = make_bars([100.0] * 10, start="2020-01-01")
