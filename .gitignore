@@ -1,0 +1,24 @@
+# Secrets — rule 8. Present from the first commit, before any key exists.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Cached market data — regenerable, and large
+data/cache/
+
+# Run outputs. Tracked: nothing but the directory itself.
+# experiments.csv is deliberately ignored: it is a local research ledger,
+# not a shared artifact, and committing it would invite editing history.
+results/*
+!results/.gitkeep
+
+# OS / editor
+.DS_Store

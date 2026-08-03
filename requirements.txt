@@ -1,0 +1,12 @@
+# Phase 1 (backtest harness) dependencies. Kept deliberately minimal —
+# CLAUDE.md working style: no heavyweight frameworks, every line legible.
+pandas>=2.2,<3
+numpy>=1.26,<3
+pyarrow>=15          # parquet engine for the local bar cache
+yfinance>=0.2.40     # daily adjusted bars
+matplotlib>=3.8      # equity curve plot
+pyyaml>=6            # config/settings.yaml
+pytest>=8
+
+# Phase 3 only — NOT installed yet, listed so the intent is on record:
+# alpaca-py
