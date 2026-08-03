@@ -19,9 +19,13 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-pytest -q                                          # all core tests, no network needed
+python -m pytest                                   # all core tests, no network needed
 python -m backtest.run --start 2010-01-01          # full backtest + report
 ```
+
+(Use `python -m pytest` rather than bare `pytest` unless you are inside the
+virtualenv — a `pytest` elsewhere on `PATH` may belong to a different interpreter
+and will not see this project's dependencies.)
 
 Every run appends a row to `results/experiments.csv` (rule 4) and writes an
 equity curve to `results/`.
