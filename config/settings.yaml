@@ -1,0 +1,50 @@
+# Every threshold the system uses lives here. Nothing is hardcoded in code
+# (strategy spec, final bullet). Phase 2 sweeps work by overriding these.
+
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLK
+  - XLF
+  - XLV
+  - XLE
+  - XLI
+  - XLP
+
+benchmark: SPY          # rule 12 — buy-and-hold comparison, same window, same costs
+
+strategy:
+  rsi_period: 2
+  sma_period: 200       # regime filter: close > 200-day SMA or no entries
+  entry_rsi: 10.0       # enter when RSI(2) < this at the close
+  exit_rsi: 70.0        # exit when RSI(2) > this at the close
+
+risk:
+  # Rule 5 — these live in the execution layer, never in strategy code.
+  max_positions: 3
+  time_stop_days: 7           # rule 6 — force exit, no exceptions
+  kill_switch_drawdown: 0.15  # peak-to-trough on total equity; flatten + halt
+  long_only: true
+  allow_margin: false
+
+costs:
+  # Rule 2 — costs are always on. This is commission + slippage combined,
+  # charged on BOTH sides of every round trip.
+  per_side_pct: 0.0005  # 0.05%
+
+capital:
+  initial: 100000.0
+
+windows:
+  # Rule 4 — out-of-sample discipline. The test window is touched ONCE, in
+  # Phase 2, for final evaluation only. Phase 1 does not evaluate it.
+  train_start: "2010-01-01"
+  train_end: "2019-12-31"
+  test_start: "2020-01-01"
+
+data:
+  cache_dir: data/cache
+  # Warn (never silently accept) when a symbol's bars have a hole this wide.
+  max_gap_business_days: 5
