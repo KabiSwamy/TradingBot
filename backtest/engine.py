@@ -34,6 +34,30 @@ SIGNAL_COLUMNS = ("rsi", "sma", "regime_ok", "entry_signal", "exit_signal")
 
 
 @dataclass(frozen=True)
+class _Signals:
+    """Strategy output as numpy arrays keyed by symbol, indexed by calendar position."""
+
+    entry: dict[str, np.ndarray]
+    exit: dict[str, np.ndarray]
+    rsi: dict[str, np.ndarray]
+    sma: dict[str, np.ndarray]
+    regime: dict[str, np.ndarray]
+
+
+def _jsonable(value: float) -> float | None:
+    """NaN -> None, so the decision log is valid JSON.
+
+    `json.dumps` emits a bare `NaN` token for a float nan, which is not legal
+    JSON and is rejected by strict parsers — including anything that will read
+    these logs from another language. Warm-up rows genuinely have no RSI, and
+    null is the honest encoding of that.
+    """
+    if value is None or value != value:
+        return None
+    return round(float(value), 6)
+
+
+@dataclass(frozen=True)
 class KillSwitch:
     triggered: bool = False
     trigger_date: pd.Timestamp | None = None
@@ -160,6 +184,23 @@ def run_backtest(
                     for p in sorted(portfolio.positions.values(), key=lambda p: p.symbol)
                 ],
                 "halted": halted,
+                # Rule 10: the prices and indicator values every decision below
+                # was taken from. Recorded for EVERY symbol, not just the ones
+                # that acted, because the rule asks for the reason behind
+                # "deliberate inaction" too — and the only way to show why a
+                # symbol was passed over is to show what it looked like. With
+                # this, any day's decisions are re-derivable from the log alone.
+                "marks": {
+                    symbol: {
+                        "close": _jsonable(closes[symbol][i]),
+                        "rsi": _jsonable(aligned_signals.rsi[symbol][i]),
+                        "sma": _jsonable(aligned_signals.sma[symbol][i]),
+                        "regime_ok": bool(aligned_signals.regime[symbol][i]),
+                        "entry_signal": bool(aligned_signals.entry[symbol][i]),
+                        "exit_signal": bool(aligned_signals.exit[symbol][i]),
+                    }
+                    for symbol in symbols
+                },
             }
         )
         if stale:
@@ -330,7 +371,7 @@ def _execute_orders(
 
 def _decide_exits(
     portfolio: Portfolio,
-    signals: dict[str, pd.DataFrame],
+    signals: _Signals,
     i: int,
     day: pd.Timestamp,
     time_stop: int,
@@ -341,7 +382,7 @@ def _decide_exits(
     exiting: set[str] = set()
     for symbol in sorted(portfolio.positions):
         position = portfolio.positions[symbol]
-        if bool(signals[symbol]["exit_signal"].iloc[i]):
+        if bool(signals.exit[symbol][i]):
             reason = "rsi_exit"          # bounce beats the clock when both fire
         elif position.days_held(i) >= time_stop:
             reason = "time_stop"
@@ -355,7 +396,7 @@ def _decide_exits(
 
 def _decide_entries(
     portfolio: Portfolio,
-    signals: dict[str, pd.DataFrame],
+    signals: _Signals,
     symbols: list[str],
     i: int,
     day: pd.Timestamp,
@@ -386,20 +427,20 @@ def _decide_entries(
     candidates = [
         s
         for s in symbols
-        if bool(signals[s]["entry_signal"].iloc[i]) and s not in portfolio.positions
+        if bool(signals.entry[s][i]) and s not in portfolio.positions
     ]
     if not candidates:
         return
 
     # Lowest RSI first (strategy spec); symbol name breaks ties so the run is
     # reproducible rather than dependent on dict ordering.
-    candidates.sort(key=lambda s: (float(signals[s]["rsi"].iloc[i]), s))
+    candidates.sort(key=lambda s: (float(signals.rsi[s][i]), s))
 
     free_slots = max_positions - (len(portfolio.positions) - len(exiting))
     target_notional = equity / max_positions
 
     for rank, symbol in enumerate(candidates):
-        rank_key = float(signals[symbol]["rsi"].iloc[i])
+        rank_key = float(signals.rsi[symbol][i])
         if rank >= free_slots:
             record["skipped"].append(
                 {"symbol": symbol, "reason": "no_free_slot", "rsi": round(rank_key, 6)}
@@ -451,12 +492,23 @@ def _align(
 
 def _align_signals(
     signals: dict[str, pd.DataFrame], calendar: pd.DatetimeIndex, symbols: list[str]
-) -> dict[str, pd.DataFrame]:
-    """Reindex signals onto the calendar; absent days can never signal."""
-    aligned = {}
+) -> _Signals:
+    """Reindex signals onto the calendar as numpy arrays.
+
+    Arrays rather than DataFrames because the loop below reads a handful of
+    scalars per symbol per day, and `.iloc[i]` on a DataFrame is roughly two
+    orders of magnitude slower than indexing an ndarray. The values are
+    identical; only the access cost changes.
+
+    Days a symbol has no bar for are filled False — an absent symbol can never
+    signal.
+    """
+    entry, exit_, rsi, sma, regime = {}, {}, {}, {}, {}
     for symbol in symbols:
         frame = signals[symbol].reindex(calendar)
-        for column in ("regime_ok", "entry_signal", "exit_signal"):
-            frame[column] = frame[column].fillna(False).astype(bool)
-        aligned[symbol] = frame
-    return aligned
+        entry[symbol] = frame["entry_signal"].fillna(False).to_numpy(dtype=bool)
+        exit_[symbol] = frame["exit_signal"].fillna(False).to_numpy(dtype=bool)
+        regime[symbol] = frame["regime_ok"].fillna(False).to_numpy(dtype=bool)
+        rsi[symbol] = frame["rsi"].to_numpy(dtype="float64")
+        sma[symbol] = frame["sma"].to_numpy(dtype="float64")
+    return _Signals(entry=entry, exit=exit_, rsi=rsi, sma=sma, regime=regime)
