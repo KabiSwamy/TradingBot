@@ -194,3 +194,94 @@ def save_equity_plot(
     figure.savefig(path, dpi=120)
     plt.close(figure)
     return path
+
+
+def save_sweep_heatmap(
+    results: pd.DataFrame,
+    path,
+    *,
+    metric: str = "sharpe",
+    report=None,
+    data_source: str = "",
+    title: str = "parameter sweep",
+):
+    """Heatmap of `metric` across the sweep grid, one panel per time stop.
+
+    All panels share one colour scale, because per-panel scaling would make a
+    mediocre region look identical to a strong one and quietly defeat the point
+    of comparing time-stop values at all.
+
+    The best cell and the recommended (plateau) cell are marked differently, so
+    the gap between "won on history" and "holds up under its neighbours" is
+    visible rather than buried in a table.
+    """
+    stops = sorted(results["time_stop_days"].unique())
+    entries = sorted(results["entry_rsi"].unique())
+    exits = sorted(results["exit_rsi"].unique())
+
+    vmin = float(results[metric].min())
+    vmax = float(results[metric].max())
+
+    figure, axes = plt.subplots(
+        1, len(stops), figsize=(5.2 * len(stops), 4.6), squeeze=False
+    )
+
+    for panel, stop in zip(axes[0], stops):
+        subset = results[results["time_stop_days"] == stop]
+        grid = (
+            subset.pivot(index="entry_rsi", columns="exit_rsi", values=metric)
+            .reindex(index=entries, columns=exits)
+        )
+        image = panel.imshow(
+            grid.to_numpy(), cmap="RdYlGn", vmin=vmin, vmax=vmax,
+            origin="lower", aspect="auto",
+        )
+        panel.set_xticks(range(len(exits)), [f"{x:g}" for x in exits])
+        panel.set_yticks(range(len(entries)), [f"{e:g}" for e in entries])
+        panel.set_xlabel("exit RSI")
+        panel.set_ylabel("entry RSI")
+        panel.set_title(f"time stop {stop:g}d")
+
+        for yi, entry in enumerate(entries):
+            for xi, exit_ in enumerate(exits):
+                value = grid.to_numpy()[yi][xi]
+                if value == value:
+                    panel.text(xi, yi, f"{value:.2f}", ha="center", va="center",
+                               fontsize=7, color="black")
+
+        if report is not None:
+            _mark(panel, report.best, stop, entries, exits, "o", "black", "best")
+            _mark(panel, report.recommended, stop, entries, exits, "s", "blue",
+                  "recommended")
+
+    # Markers are drawn only on the panel whose time stop they belong to, so the
+    # handles must be gathered across every panel — collecting them from the
+    # first one silently produces no legend whenever the marked cells live
+    # elsewhere, which is most of the time.
+    handles, labels = [], []
+    for panel in axes[0]:
+        for handle, label in zip(*panel.get_legend_handles_labels()):
+            if label not in labels:
+                handles.append(handle)
+                labels.append(label)
+    if handles:
+        figure.legend(handles, labels, loc="lower center", ncol=len(labels),
+                      fontsize=9, frameon=True)
+
+    banner = "  [SYNTHETIC DATA — NOT A RESEARCH RESULT]" if data_source == "synthetic" else ""
+    figure.suptitle(f"{title}  —  {metric}{banner}")
+    figure.colorbar(image, ax=axes[0].tolist(), shrink=0.85, label=metric)
+    figure.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(figure)
+    return path
+
+
+def _mark(panel, cell, stop, entries, exits, marker, colour, label):
+    """Mark a grid cell, but only on the panel its time stop belongs to."""
+    if cell["time_stop_days"] != stop:
+        return
+    panel.scatter(
+        exits.index(cell["exit_rsi"]), entries.index(cell["entry_rsi"]),
+        marker=marker, s=190, facecolors="none", edgecolors=colour,
+        linewidths=2.2, label=label,
+    )

@@ -55,6 +55,19 @@ class Settings:
     max_gap_business_days: int
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
+    def with_overrides(self, **overrides: Any) -> "Settings":
+        """Return a validated copy with fields replaced.
+
+        Phase 2 sweeps need to vary parameters without re-reading settings.yaml
+        (which would discard any overrides already applied). Validation runs
+        again on the copy, so a sweep cannot produce a configuration the loader
+        would have refused — a grid cell with entry_rsi above exit_rsi raises
+        here exactly as it would from the file.
+        """
+        patched = _apply_overrides(self, overrides)
+        _validate(patched)
+        return patched
+
     def fingerprint(self) -> tuple[str, str]:
         """Return (short_hash, canonical_json) identifying this configuration.
 

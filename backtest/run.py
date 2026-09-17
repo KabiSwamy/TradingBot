@@ -21,7 +21,12 @@ import pandas as pd
 
 from backtest.benchmark import buy_and_hold
 from backtest.costs import CostModel
-from backtest.experiments import SCHEMA_VERSION, append_row, git_commit, window_label
+from backtest.experiments import (
+    append_row,
+    build_row,
+    prior_oos_runs,
+    window_label,
+)
 from backtest.metrics import compute_metrics
 from backtest.pipeline import run_strategy
 from backtest.report import render_report, save_equity_plot
@@ -66,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exit-rsi", type=float, default=None)
     parser.add_argument("--time-stop", type=int, default=None)
     parser.add_argument("--capital", type=float, default=None)
+    parser.add_argument(
+        "--i-have-decided-parameters",
+        action="store_true",
+        help="acknowledge that parameters are final before evaluating the "
+             "out-of-sample window again with a different configuration (rule 4)",
+    )
     return parser
 
 
@@ -103,6 +114,16 @@ def main(argv: list[str] | None = None) -> int:
         print("not enough bars to run a backtest", file=sys.stderr)
         return 1
 
+    label = window_label(args.start, end, settings)
+    ledger_path = (
+        Path(args.out_dir) if args.out_dir else RESULTS_DIR
+    ) / "experiments.csv"
+    if label in {"test", "full"} and not args.i_have_decided_parameters:
+        blocked = _oos_conflict(ledger_path, settings)
+        if blocked:
+            print(blocked, file=sys.stderr)
+            return 3
+
     result = run_strategy(bars, settings)
 
     strategy_metrics = compute_metrics(
@@ -124,7 +145,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         benchmark_metrics = compute_metrics(benchmark_curve, label="benchmark")
 
-    label = window_label(args.start, end, settings)
     print(
         render_report(
             strategy_metrics,
@@ -162,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  NOT logged to experiments.csv (--no-log)")
     else:
         path = append_row(
-            _experiment_row(
+            build_row(
                 run_id, settings, source.name, label, args.start, end,
                 strategy_metrics, benchmark_metrics, result,
             ),
@@ -179,74 +199,51 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _oos_conflict(ledger_path: Path, settings) -> str | None:
+    """Refuse a second out-of-sample look under DIFFERENT parameters (rule 4).
+
+    Re-running an identical configuration is reproduction and is always allowed.
+    Running a *different* one against the test window after having already seen
+    it is parameter selection on out-of-sample data — the precise thing rule 4
+    forbids, and it does not feel like cheating while you are doing it.
+
+    This refuses before the backtest runs. Refusing afterwards would print the
+    numbers first, and you cannot unsee a Sharpe.
+    """
+    prior = prior_oos_runs(ledger_path)
+    if not prior:
+        return None
+
+    this_hash = settings.fingerprint()[0]
+    different = [r for r in prior if r.get("config_hash") != this_hash]
+    if not different:
+        return None
+
+    listing = "\n".join(
+        f"      {r.get('timestamp_utc', '?')}  config {r.get('config_hash', '?')}"
+        f"  sharpe {r.get('sharpe', '?')}"
+        for r in different[-5:]
+    )
+    return (
+        "\n  REFUSED — rule 4 (out-of-sample discipline)\n\n"
+        f"  The out-of-sample window has already been evaluated "
+        f"{len(different)} time(s) with a different configuration:\n\n"
+        f"{listing}\n\n"
+        f"  This run uses config {this_hash}. Evaluating the test window again\n"
+        "  with different parameters is parameter selection on out-of-sample\n"
+        "  data, which is what rule 4 forbids.\n\n"
+        "  If the parameters really are final and this is the one evaluation,\n"
+        "  pass --i-have-decided-parameters. Prefer sweeping the train window\n"
+        "  (python -m backtest.sweep) and choosing from the plateau first.\n"
+    )
+
+
 def _display(path: Path) -> str:
     """Repo-relative when possible, absolute otherwise (e.g. a test tmp_path)."""
     try:
         return str(path.relative_to(REPO_ROOT))
     except ValueError:
         return str(path)
-
-
-def _experiment_row(
-    run_id, settings, source_name, label, start, end, strategy, benchmark, result
-) -> dict:
-    config_hash, config_json = settings.fingerprint()
-    row = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": run_id,
-        "timestamp_utc": f"{datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ}",
-        "git_commit": git_commit(),
-        "data_source": source_name,
-        "window_label": label,
-        "window_start": start,
-        "window_end": end,
-        "trading_days": strategy.trading_days,
-        "symbols": len(settings.universe),
-        "initial_capital": settings.initial_capital,
-        "rsi_period": settings.strategy.rsi_period,
-        "entry_rsi": settings.strategy.entry_rsi,
-        "exit_rsi": settings.strategy.exit_rsi,
-        "sma_period": settings.strategy.sma_period,
-        "cost_per_side": settings.cost_per_side,
-        "max_positions": settings.risk.max_positions,
-        "time_stop_days": settings.risk.time_stop_days,
-        "kill_switch_drawdown": settings.risk.kill_switch_drawdown,
-        "final_equity": round(strategy.final_equity, 2),
-        "total_return": round(strategy.total_return, 6),
-        "cagr": round(strategy.cagr, 6),
-        "sharpe": round(strategy.sharpe, 4),
-        "volatility": round(strategy.volatility, 6),
-        "max_drawdown": round(strategy.max_drawdown, 6),
-        "calmar": round(strategy.calmar, 4),
-        "trade_count": strategy.trade_count,
-        "win_rate": round(strategy.win_rate, 6),
-        "avg_win": round(strategy.avg_win, 6),
-        "avg_loss": round(strategy.avg_loss, 6),
-        "win_loss_ratio": round(strategy.win_loss_ratio, 4),
-        "profit_factor": round(strategy.profit_factor, 4),
-        "avg_holding_days": round(strategy.avg_holding_days, 2),
-        "exposure": round(strategy.exposure, 6),
-        "time_in_market": round(strategy.time_in_market, 6),
-        "kill_switch_triggered": result.kill_switch.triggered,
-        "kill_switch_date": (
-            result.kill_switch.trigger_date.strftime("%Y-%m-%d")
-            if result.kill_switch.trigger_date is not None
-            else ""
-        ),
-        "sharpe_suspect": strategy.sharpe > 2.5,
-        "config_hash": config_hash,
-        "config_json": config_json,
-    }
-    if benchmark is not None:
-        row.update(
-            {
-                "benchmark_total_return": round(benchmark.total_return, 6),
-                "benchmark_cagr": round(benchmark.cagr, 6),
-                "benchmark_sharpe": round(benchmark.sharpe, 4),
-                "benchmark_max_drawdown": round(benchmark.max_drawdown, 6),
-            }
-        )
-    return row
 
 
 if __name__ == "__main__":
