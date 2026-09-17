@@ -111,6 +111,29 @@ def test_synthetic_symbols_are_independent_of_each_other():
     pd.testing.assert_frame_equal(spy, spy_again)
 
 
+@pytest.mark.parametrize("longer_end", ["2016-06-01", "2020-01-01"])
+def test_bars_do_not_change_when_a_longer_range_is_requested(longer_end):
+    """Regression: extending the end date used to rewrite the whole history.
+
+    Every quantity was drawn from one generator, so each draw's position in the
+    stream depended on how many values the previous draw consumed. Asking for a
+    longer range shifted every later draw, and the same dates came back with
+    different prices — up to 138 points apart on a 100-point series.
+
+    The tests never caught it because they all pinned identical arguments, and
+    determinism-under-identical-arguments is not the property that matters. This
+    is: bars for a date must not depend on when you asked or how much you asked
+    for.
+    """
+    source = SyntheticSource(seed=42)
+    short = source.fetch("SPY", "2015-01-01", "2016-01-01")
+    long = source.fetch("SPY", "2015-01-01", longer_end)
+
+    shared = short.index.intersection(long.index)
+    assert len(shared) == len(short)
+    pd.testing.assert_frame_equal(short.loc[shared], long.loc[shared])
+
+
 def test_different_symbols_get_different_paths():
     spy = SyntheticSource(seed=42).fetch("SPY", "2015-01-01", "2016-01-01")
     qqq = SyntheticSource(seed=42).fetch("QQQ", "2015-01-01", "2016-01-01")

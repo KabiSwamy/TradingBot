@@ -6,8 +6,9 @@ long-term uptrends, sell the bounce. Daily bars, next-open fills, costs always o
 **Read [`CLAUDE.md`](CLAUDE.md) first — it is the project's constitution.** Every
 rule in it is binding on both humans and agents working in this repo.
 
-Status: **Phase 1 (backtest harness) complete.** No broker integration, no live
-execution, no API keys. See the phase gates in `CLAUDE.md`.
+Status: **Phase 1 complete; Phase 2 machinery complete, verdict pending real data.**
+No broker integration, no live execution, no API keys. See the phase gates in
+`CLAUDE.md`.
 
 ## Setup
 
@@ -19,8 +20,9 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python -m pytest                                   # all core tests, no network needed
-python -m backtest.run --start 2010-01-01          # full backtest + report
+python -m pytest                                   # all tests, no network needed
+python -m backtest.run --start 2010-01-01          # single backtest + report
+python -m backtest.sweep                           # Phase 2 grid + plateau analysis
 ```
 
 Use `python -m pytest` rather than bare `pytest` unless you are inside the
@@ -59,12 +61,43 @@ in `results/experiments.csv`.
 > cannot fetch data in this container. Run it on a machine with network access to
 > produce real Phase 1 numbers; everything else is verifiable offline.
 
+## Phase 2 — validation
+
+```bash
+python -m backtest.sweep --source yfinance     # 75 combos on the TRAIN window
+```
+
+Sweeps entry RSI × exit RSI × time stop, prints a plateau analysis, writes a
+heatmap and a row per combination to `experiments.csv`.
+
+The plateau analysis ranks cells by `robust_score = min(own Sharpe, worst
+neighbour)` — a cell scores well only if everything one step away from it does
+too. That is rule 3 ("plateau, not peak") expressed as arithmetic. It reports
+the naive best cell and the recommended cell **side by side** and says when they
+differ, which is the normal case and the whole point: the best cell wins on
+history, the recommended one is the cell whose neighbours also hold up.
+
+Two guards enforce rule 4, because out-of-sample discipline is the rule that
+erodes most quietly:
+
+- `backtest.sweep` **refuses** a window reaching past `train_end`. Searching
+  parameters on out-of-sample data is the thing rule 4 forbids.
+- `backtest.run` **refuses** a second out-of-sample evaluation under a
+  *different* configuration, naming the earlier runs from the ledger. Re-running
+  an identical config is reproduction and is always allowed. The check runs
+  before the backtest, not after — refusing afterwards would already have
+  printed the Sharpe, and you cannot unsee a number.
+
+When the real sweep is done, copy `results/phase2_verdict_TEMPLATE.md` to
+`results/phase2_verdict.md` and fill it in. Do not fill it in from a synthetic
+run.
+
 ## Layout
 
     config/       settings.yaml + a loader that refuses rule-violating configs
     data/         bar sources, parquet cache, validation
     strategies/   pure signal functions — DataFrame in, signals out (rule 9)
-    backtest/     engine, cost model, metrics, benchmark, report, CLI
+    backtest/     engine, cost model, metrics, benchmark, report, sweep, plateau
     tests/        look-ahead, fill timing, indicators, costs, kill switch
     results/      experiments.csv, equity curves, decision logs (gitignored)
 
@@ -91,6 +124,16 @@ The five families named in `CLAUDE.md`, plus the guards that keep them honest:
   imports and side effects, because a stated convention decays under deadline.
 - **No network / no ledger pollution** — autouse fixtures fail any test that opens
   a socket or writes into the real `results/`.
+- **Rule 10** — on a day with no orders, every symbol must be explainable from
+  its own recorded marks as held, out of regime, or above the entry threshold.
+- **Real-data shapes** — yfinance MultiIndex/tz variants, holiday gaps, and a
+  symbol that lists mid-window. These paths are unreachable from an environment
+  with no market-data access, which is exactly why they are tested with
+  fabricated payloads.
+
+Deprecation and future warnings from this project's own code fail the suite.
+That is not pedantry: it caught a pandas downcasting change that only triggers
+on a ragged calendar, i.e. only on real data.
 
 ---
 

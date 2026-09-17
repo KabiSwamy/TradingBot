@@ -101,9 +101,12 @@ class SyntheticSource:
     an uptrend — flat noise would produce a backtest with no trades, which tests
     nothing.
 
-    Determinism is per symbol: the seed is derived from the symbol name, so
-    SPY's bars are identical on every run and independent of which other symbols
-    were requested.
+    Determinism is per symbol AND stable under a changing end date: the bars for
+    a given date never change because a longer range was requested later. That
+    property needs a separate generator per quantity (see `_rng`) — with one
+    shared stream, every draw's position depends on how many values the previous
+    draw consumed, so extending the range silently rewrites history. The bars are
+    also independent of which other symbols were requested.
     """
 
     name = "synthetic"
@@ -120,8 +123,16 @@ class SyntheticSource:
         self.annual_vol = annual_vol
         self.dip_probability = dip_probability
 
-    def _rng(self, symbol: str) -> np.random.Generator:
-        digest = hashlib.sha256(f"{self.seed}:{symbol}".encode()).digest()
+    def _rng(self, symbol: str, stream: str) -> np.random.Generator:
+        """An independent generator per (symbol, stream).
+
+        Separate streams are not tidiness — they are what makes the series
+        stable. Drawing everything from one generator means each draw's position
+        in the stream depends on how many values the previous draw consumed, so
+        asking for a longer date range shifts every later draw and silently
+        rewrites history for dates that were already generated.
+        """
+        digest = hashlib.sha256(f"{self.seed}:{symbol}:{stream}".encode()).digest()
         return np.random.default_rng(int.from_bytes(digest[:8], "big"))
 
     def fetch(self, symbol: str, start: str, end: str | None = None) -> pd.DataFrame:
@@ -135,13 +146,21 @@ class SyntheticSource:
                 f"{symbol}: synthetic range {start}..{end} contains no business days"
             )
 
-        rng = self._rng(symbol)
+        # One generator per concern. See _rng: sharing a single stream makes the
+        # whole series depend on the requested end date, so the same dates would
+        # come back with different prices tomorrow.
+        path_rng = self._rng(symbol, "path")
+        dip_rng = self._rng(symbol, "dips")
+        gap_rng = self._rng(symbol, "gap")
+        spread_rng = self._rng(symbol, "spread")
+        volume_rng = self._rng(symbol, "volume")
+
         n = len(dates)
         dt = 1.0 / 252.0
 
         mu = self.annual_drift * dt
         sigma = self.annual_vol * np.sqrt(dt)
-        shocks = rng.normal(mu, sigma, n)
+        shocks = path_rng.normal(mu, sigma, n)
 
         # Inject dip-and-recover episodes: a few days sharply down, then the
         # same amount handed back over the following days. This is what gives
@@ -155,10 +174,10 @@ class SyntheticSource:
         # the rest of the run was flat cash, which exercises almost nothing.
         i = 0
         while i < n:
-            if rng.random() < self.dip_probability:
-                fall = int(rng.integers(2, 5))
-                recover = int(rng.integers(2, 6))
-                depth = float(rng.uniform(0.015, 0.030))
+            if dip_rng.random() < self.dip_probability:
+                fall = int(dip_rng.integers(2, 5))
+                recover = int(dip_rng.integers(2, 6))
+                depth = float(dip_rng.uniform(0.015, 0.030))
                 end_fall = min(i + fall, n)
                 shocks[i:end_fall] -= depth
                 dropped = depth * (end_fall - i)
@@ -175,16 +194,16 @@ class SyntheticSource:
         # from the previous close, and high/low bracket both by construction so
         # the validator's invariants hold.
         prev_close = np.concatenate([[close[0]], close[:-1]])
-        gap = rng.normal(0.0, sigma * 0.5, n)
+        gap = gap_rng.normal(0.0, sigma * 0.5, n)
         open_ = prev_close * np.exp(gap)
 
-        spread = np.abs(rng.normal(0.0, sigma * 0.6, n))
+        spread = np.abs(spread_rng.normal(0.0, sigma * 0.6, n))
         top = np.maximum(open_, close)
         bottom = np.minimum(open_, close)
         high = top * (1.0 + spread)
         low = bottom * (1.0 - spread)
 
-        volume = rng.integers(1_000_000, 100_000_000, n).astype("float64")
+        volume = volume_rng.integers(1_000_000, 100_000_000, n).astype("float64")
 
         return pd.DataFrame(
             {
