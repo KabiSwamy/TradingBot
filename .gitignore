@@ -19,6 +19,9 @@ data/cache/
 # not a shared artifact, and committing it would invite editing history.
 results/*
 !results/.gitkeep
+# The verdict TEMPLATE is tracked; a filled-in verdict is not. Keeping the
+# template beside where the verdict will live means it is found when needed.
+!results/*_TEMPLATE.md
 
 # OS / editor
 .DS_Store

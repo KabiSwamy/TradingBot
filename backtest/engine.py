@@ -504,11 +504,25 @@ def _align_signals(
     signal.
     """
     entry, exit_, rsi, sma, regime = {}, {}, {}, {}, {}
+    flag_columns = ["entry_signal", "exit_signal", "regime_ok"]
     for symbol in symbols:
-        frame = signals[symbol].reindex(calendar)
-        entry[symbol] = frame["entry_signal"].fillna(False).to_numpy(dtype=bool)
-        exit_[symbol] = frame["exit_signal"].fillna(False).to_numpy(dtype=bool)
-        regime[symbol] = frame["regime_ok"].fillna(False).to_numpy(dtype=bool)
-        rsi[symbol] = frame["rsi"].to_numpy(dtype="float64")
-        sma[symbol] = frame["sma"].to_numpy(dtype="float64")
+        source = signals[symbol]
+        # Reindex the boolean columns WITH fill_value rather than filling NaN
+        # afterwards. Reindexing bools onto a longer calendar first introduces
+        # NaN and promotes the column to object dtype; the subsequent fillna
+        # then silently downcasts it back, which pandas has deprecated. Filling
+        # during the reindex means the NaN never exists and the dtype never
+        # changes.
+        #
+        # This only arises on a ragged calendar — a universe whose symbols do
+        # not share one listing date — so it is invisible against synthetic bars
+        # and appears only on real data.
+        flags = source[flag_columns].reindex(calendar, fill_value=False)
+        values = source[["rsi", "sma"]].reindex(calendar)
+
+        entry[symbol] = flags["entry_signal"].to_numpy(dtype=bool)
+        exit_[symbol] = flags["exit_signal"].to_numpy(dtype=bool)
+        regime[symbol] = flags["regime_ok"].to_numpy(dtype=bool)
+        rsi[symbol] = values["rsi"].to_numpy(dtype="float64")
+        sma[symbol] = values["sma"].to_numpy(dtype="float64")
     return _Signals(entry=entry, exit=exit_, rsi=rsi, sma=sma, regime=regime)
